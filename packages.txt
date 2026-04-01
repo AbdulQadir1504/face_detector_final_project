@@ -1,3 +1,4 @@
 cmake
 build-essential
 libopenblas-dev
+libx11-dev
