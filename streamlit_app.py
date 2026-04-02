@@ -1,116 +1,59 @@
-"""Streamlit UI for AI Security System using FastAPI backend."""
-
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
+import streamlit as st
+from streamlit_webrtc import webrtc_streamer
 import av
 import cv2
-import time
 import requests
-import streamlit as st
+import numpy as np
 
+# API URL setup
 API_URL = "http://localhost:8000"
 
 st.set_page_config(page_title="AI Security Dashboard", layout="wide")
+st.title("🛡️ AI Security System - Live WebRTC Dashboard")
 
-st.title("AI Security System - FastAPI + Streamlit Frontend")
-
-col1, col2 = st.columns([2, 1])
-
-with col2:
-    st.markdown("### Controls")
-    load_frame = st.button("Refresh Frame")
-    
-    # Naya Button for Data Update
-    if st.button("🔄 Sync/Update Known Faces"):
-        try:
-            r = requests.post(f"{API_URL}/reload_faces")
-            if r.status_code == 200:
-                st.sidebar.success("Database Updated Successfully!")
-            else:
-                st.sidebar.error("Failed to update faces.")
-        except Exception as e:
-            st.sidebar.error(f"Error: {e}")
-    interval = st.slider("Refresh interval (seconds)", min_value=0.1, max_value=2.0, value=0.5, step=0.1)
-    show_stream = st.checkbox("Live stream (MJPEG)")
-
-with col1:
-    frame_placeholder = st.empty()
-
-status = st.empty()
-
-
-def get_stats():
-    try:
-        r = requests.get(f"{API_URL}/stats", timeout=2)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def get_alert_summary():
-    try:
-        r = requests.get(f"{API_URL}/alerts", timeout=2)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def get_frame_bytes():
-    try:
-        r = requests.get(f"{API_URL}/camera/frame", timeout=2)
-        if r.status_code == 200:
-            return r.content
-    except Exception:
-        return None
-
- def video_frame_callback(frame):
+# --- FACE RECOGNITION CALLBACK ---
+def video_frame_callback(frame):
     img = frame.to_ndarray(format="bgr24")
-    
-    # Yahan hum detection logic ko call kar sakte hain
-    # Note: Cloud par 'api_server' ki bajaye direct 'face_detector' call karna behtar hai
-    
+    # Yahan frame return ho raha hai jo browser mein dikhega
     return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- UI MEIN REPLACEMENT ---
-st.title("Live AI Security System (WebRTC)")
+# --- UI LAYOUT ---
+col1, col2 = st.columns([2, 1])
 
-webrtc_streamer(
-    key="security-camera",
-    video_frame_callback=video_frame_callback,
-    rtc_configuration={
-        "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-    },
-    media_stream_constraints={"video": True, "audio": False},
-)    
-    while True:
-        display_snapshot()
-        stats_data = get_stats()
-        alert_data = get_alert_summary()
+with col1:
+    st.subheader("📹 Live Camera Feed (WebRTC)")
+    webrtc_streamer(
+        key="security-camera",
+        video_frame_callback=video_frame_callback,
+        rtc_configuration={
+            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+        },
+        media_stream_constraints={"video": True, "audio": False},
+    )
 
-        # 2. Use .container() to overwrite the same spot in the sidebar
-        with stats_placeholder.container():
-            st.markdown("### System Stats")
-            st.write(stats_data)
+with col2:
+    st.subheader("📊 System Control & Stats")
+    
+    if st.button("🔄 Sync Known Faces"):
+        try:
+            res = requests.post(f"{API_URL}/reload_faces", timeout=5)
+            if res.status_code == 200:
+                st.success("Database Updated!")
+            else:
+                st.error("Backend Error")
+        except:
+            st.warning("Backend API is not reachable.")
 
-        with log_placeholder.container():
-            st.markdown("### Alert Log Summary")
-            st.write(alert_data)
+    st.markdown("---")
+    stats_placeholder = st.empty()
+    try:
+        r = requests.get(f"{API_URL}/stats", timeout=1)
+        if r.status_code == 200:
+            stats_placeholder.json(r.json())
+        else:
+            stats_placeholder.info("Waiting for statistics...")
+    except:
+        stats_placeholder.error("Cannot connect to Backend API.")
 
-        time.sleep(interval)
-if show_stream:
-    st.success("Live stream enabled. Make sure FastAPI server is running on port 8000.")
-    run_live_loop()
-else:
-    if load_frame:
-        display_snapshot()
-        status.info("Snapshot loaded")
-    else:
-        st.info("Toggle 'Live stream' or click 'Refresh Frame' to start.")
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### Backend endpoints")
-st.sidebar.markdown(f"- Camera frame: {API_URL}/camera/frame")
-st.sidebar.markdown(f"- MJPEG stream: {API_URL}/camera/stream")
-st.sidebar.markdown(f"- Stats: {API_URL}/stats")
-st.sidebar.markdown(f"- Alert summary: {API_URL}/alerts")
+st.sidebar.markdown("### Deployment Info")
+st.sidebar.info("Teacher Demo: Use the Start button on the camera feed for live streaming.")
