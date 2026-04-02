@@ -7,4 +7,4 @@ opencv-python-headless
 face-recognition
 numpy<2.0.0
 streamlit-webrtc
-av
+av==10.0.0
