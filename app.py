@@ -1,184 +1,201 @@
+"""
+AI-Based Security System - Streamlit Cloud Compatible
+Uses browser camera instead of server-side webcam
+"""
+
 import streamlit as st
 import cv2
 import numpy as np
-from PIL import Image
-import os
-from datetime import datetime
-import json
-
-# Import your project modules
-from utils import FaceDetector
+import time
+from pathlib import Path
+from config import UNKNOWN_FACE_THRESHOLD, KNOWN_PERSON_COLOR, UNKNOWN_PERSON_COLOR
+from utils import FaceEncoder, FaceDetector, create_known_faces_directory
 from alert_system import AlertSystem
-from config import Config
+import pandas as pd
+from datetime import datetime
 
+# Page configuration
 st.set_page_config(
-    page_title="Face Detection System",
+    page_title="AI Security System",
     page_icon="🛡️",
     layout="wide"
 )
 
-st.title("🛡️ AI Security System - Face Detection Dashboard")
+# Initialize session state
+if 'system_initialized' not in st.session_state:
+    st.session_state.system_initialized = False
+    st.session_state.face_encoder = None
+    st.session_state.face_detector = None
+    st.session_state.alert_system = None
+    st.session_state.detection_history = []
+    st.session_state.last_alert_time = 0
 
-# Initialize your components
-@st.cache_resource
-def init_face_detector():
-    return FaceDetector()
+# Title
+st.title("🛡️ AI-Based Security System")
+st.markdown("Real-time face detection and recognition using your browser's camera")
 
-@st.cache_resource
-def init_alert_system():
-    return AlertSystem()
-
-try:
-    face_detector = init_face_detector()
-    alert_system = init_alert_system()
-    st.success("✅ System initialized successfully")
-except Exception as e:
-    st.error(f"⚠️ Initialization error: {str(e)}")
-    st.info("Please ensure known_faces directory has images")
-
-# Create tabs for different functionalities
-tab1, tab2, tab3, tab4 = st.tabs(["📸 Image Upload", "📹 Live Camera", "📊 Alerts Log", "⚙️ Settings"])
-
-# TAB 1: Image Upload
-with tab1:
-    st.subheader("Upload Image for Face Detection")
-    uploaded_file = st.file_uploader("Choose an image...", type=['jpg', 'jpeg', 'png'])
+# Sidebar for configuration
+with st.sidebar:
+    st.header("⚙️ Configuration")
     
-    if uploaded_file:
-        # Display uploaded image
-        image = Image.open(uploaded_file)
-        img_array = np.array(image)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.image(image, caption="Original Image", use_column_width=True)
-        
-        # Process image for face detection
-        try:
-            # Convert RGB to BGR for OpenCV
-            img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-            
-            # Detect faces
-            faces = face_detector.detect_faces(img_bgr)
-            
-            # Draw rectangles on detected faces
-            for (x, y, w, h) in faces:
-                cv2.rectangle(img_bgr, (x, y), (x+w, y+h), (0, 255, 0), 3)
-                cv2.putText(img_bgr, "Face Detected", (x, y-10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            
-            # Convert back to RGB for display
-            result_img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-            
-            with col2:
-                st.image(result_img, caption=f"Detected {len(faces)} Faces", use_column_width=True)
-            
-            # Log the detection
-            if len(faces) > 0:
-                alert_system.log_alert(f"Detected {len(faces)} face(s) in uploaded image", "INFO")
-                st.success(f"✅ {len(faces)} face(s) detected successfully!")
-            else:
-                st.warning("⚠️ No faces detected in the image")
-                
-        except Exception as e:
-            st.error(f"Error processing image: {str(e)}")
-
-# TAB 2: Live Camera (Using OpenCV)
-with tab2:
-    st.subheader("Live Camera Feed")
-    st.warning("Note: For live camera, ensure your browser has camera permissions")
+    # Known faces status
+    st.subheader("📁 Known Faces Database")
+    create_known_faces_directory()
     
-    # Simple webcam capture
-    run = st.checkbox('Start Camera')
-    frame_placeholder = st.empty()
-    
-    if run:
-        cap = cv2.VideoCapture(0)
-        st.info("Camera is running. Click 'Start Camera' checkbox again to stop.")
-        
-        while run:
-            ret, frame = cap.read()
-            if ret:
-                # Detect faces in real-time
-                faces = face_detector.detect_faces(frame)
-                
-                # Draw rectangles
-                for (x, y, w, h) in faces:
-                    cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                    cv2.putText(frame, "Face", (x, y-10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                
-                # Convert for display
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame_placeholder.image(frame_rgb, channels="RGB", use_column_width=True)
-            else:
-                st.error("Could not access camera")
-                break
-        cap.release()
-
-# TAB 3: Alert Logs
-with tab3:
-    st.subheader("Security Alerts Log")
-    
-    # Display alerts from log file
-    if os.path.exists("security_alerts.log"):
-        with open("security_alerts.log", "r") as f:
-            logs = f.readlines()
-        
-        if logs:
-            # Show last 50 alerts
-            for log in logs[-50:]:
-                st.text(log.strip())
+    known_faces_path = Path("known_faces")
+    if known_faces_path.exists():
+        persons = [d.name for d in known_faces_path.iterdir() if d.is_dir()]
+        if persons:
+            st.success(f"✅ Loaded {len(persons)} known person(s): {', '.join(persons)}")
         else:
-            st.info("No alerts logged yet")
+            st.warning("⚠️ No known faces found. Add images to 'known_faces/' directory")
+    
+    # Threshold setting
+    threshold = st.slider(
+        "Face Recognition Threshold",
+        min_value=0.3,
+        max_value=0.8,
+        value=UNKNOWN_FACE_THRESHOLD,
+        step=0.01,
+        help="Lower = stricter matching, Higher = more permissive"
+    )
+    
+    # Alert cooldown
+    cooldown = st.number_input("Alert Cooldown (seconds)", min_value=1, max_value=30, value=5)
+    
+    # Reset button
+    if st.button("🔄 Reset Session"):
+        st.session_state.detection_history = []
+        st.session_state.last_alert_time = 0
+        st.rerun()
+
+# Initialize system
+@st.cache_resource
+def initialize_system():
+    """Initialize face recognition components (cached for performance)"""
+    face_encoder = FaceEncoder()
+    face_detector = FaceDetector()
+    alert_system = AlertSystem()
+    
+    # Load known faces
+    face_encoder.load_known_faces()
+    
+    return face_encoder, face_detector, alert_system
+
+# Main content area
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.subheader("📹 Live Camera Feed")
+    
+    # Camera input from browser
+    camera_image = st.camera_input("Position your face in frame", key="security_camera")
+    
+    if camera_image is not None:
+        # Convert uploaded image to OpenCV format
+        bytes_data = camera_image.getvalue()
+        nparr = np.frombuffer(bytes_data, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if frame is not None:
+            # Initialize system if not already
+            if not st.session_state.system_initialized:
+                face_encoder, face_detector, alert_system = initialize_system()
+                st.session_state.face_encoder = face_encoder
+                st.session_state.face_detector = face_detector
+                st.session_state.alert_system = alert_system
+                st.session_state.system_initialized = True
+            
+            # Process frame for face detection
+            face_locations = st.session_state.face_detector.detect_faces(frame)
+            frame_display = frame.copy()
+            detections_this_frame = []
+            
+            if face_locations:
+                face_encodings = st.session_state.face_detector.get_face_encodings(frame, face_locations)
+                
+                for face_location, face_encoding in zip(face_locations, face_encodings):
+                    name, distance, is_known = st.session_state.face_encoder.recognize_face(
+                        face_encoding, threshold=threshold
+                    )
+                    
+                    color = KNOWN_PERSON_COLOR if is_known else UNKNOWN_PERSON_COLOR
+                    label = f"{name} ({distance:.2f})" if is_known else f"UNKNOWN ({distance:.2f})"
+                    
+                    # Draw bounding box
+                    top, right, bottom, left = face_location
+                    cv2.rectangle(frame_display, (left, top), (right, bottom), color, 2)
+                    
+                    # Draw label background
+                    label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                    cv2.rectangle(frame_display, (left, top - label_size[1] - 10), 
+                                 (left + label_size[0], top), color, -1)
+                    cv2.putText(frame_display, label, (left, top - 5), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    
+                    # Handle unknown person alert
+                    current_time = time.time()
+                    if not is_known and (current_time - st.session_state.last_alert_time) > cooldown:
+                        st.session_state.alert_system.trigger_alert(name, distance)
+                        st.session_state.last_alert_time = current_time
+                        st.warning(f"🚨 INTRUSION ALERT: Unknown person detected! (Confidence: {distance:.2f})")
+                    
+                    # Log detection
+                    detections_this_frame.append({
+                        "timestamp": datetime.now().strftime("%H:%M:%S"),
+                        "name": name,
+                        "confidence": distance,
+                        "status": "KNOWN" if is_known else "UNKNOWN"
+                    })
+            
+            # Update detection history
+            if detections_this_frame:
+                st.session_state.detection_history.extend(detections_this_frame)
+                # Keep last 100 records
+                if len(st.session_state.detection_history) > 100:
+                    st.session_state.detection_history = st.session_state.detection_history[-100:]
+            
+            # Display processed frame
+            frame_rgb = cv2.cvtColor(frame_display, cv2.COLOR_BGR2RGB)
+            st.image(frame_rgb, caption="Processed Feed", use_container_width=True)
+
+with col2:
+    st.subheader("📊 Live Statistics")
+    
+    # Stats cards
+    if st.session_state.detection_history:
+        df = pd.DataFrame(st.session_state.detection_history)
+        total_detections = len(df)
+        unknown_count = len(df[df['status'] == 'UNKNOWN'])
+        known_count = len(df[df['status'] == 'KNOWN'])
+        
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.metric("Total Detections", total_detections)
+            st.metric("Known Persons", known_count)
+        with col_b:
+            st.metric("Unknown Persons", unknown_count)
+            st.metric("Alert Status", "🔴 Active" if unknown_count > 0 else "🟢 Idle")
+        
+        # Recent detections table
+        st.subheader("📋 Recent Detections")
+        recent_df = df.tail(10).sort_values('timestamp', ascending=False)
+        st.dataframe(recent_df, use_container_width=True)
     else:
-        st.info("Alert log file not found. Alerts will be created when faces are detected.")
+        st.info("No detections yet. Position yourself in front of the camera.")
     
-    if st.button("Clear Logs"):
-        if os.path.exists("security_alerts.log"):
-            open("security_alerts.log", "w").close()
-            st.success("Logs cleared!")
-            st.rerun()
+    # Instructions
+    st.markdown("---")
+    st.subheader("📖 Instructions")
+    st.markdown("""
+    1. **Add known faces** to the `known_faces/` directory
+       - Create folders: `known_faces/PersonName/`
+       - Add 2-5 clear face photos per person
+    2. **Position yourself** in front of the camera
+    3. **Known persons** will show with 🟢 GREEN boxes
+    4. **Unknown persons** will show with 🔴 RED boxes and trigger alerts
+    """)
 
-# TAB 4: Settings & Info
-with tab4:
-    st.subheader("System Configuration")
-    
-    st.write("### Known Faces Directory")
-    if os.path.exists("known_faces"):
-        known_people = [d for d in os.listdir("known_faces") 
-                       if os.path.isdir(os.path.join("known_faces", d))]
-        st.write(f"Found {len(known_people)} registered people:")
-        for person in known_people:
-            st.write(f"- {person}")
-    else:
-        st.warning("No known_faces directory found")
-    
-    st.write("### System Status")
-    st.json({
-        "Status": "Active",
-        "Face Detector": "Loaded",
-        "Alert System": "Ready",
-        "Last Check": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
-
-# Sidebar
-st.sidebar.markdown("### 📊 Statistics")
-st.sidebar.markdown("---")
-
-# Count detections from logs
-if os.path.exists("security_alerts.log"):
-    with open("security_alerts.log", "r") as f:
-        log_lines = f.readlines()
-        total_detections = len([l for l in log_lines if "face" in l.lower()])
-        st.sidebar.metric("Total Detections", total_detections)
-
-st.sidebar.markdown("---")
-st.sidebar.info(
-    "**Instructions:**\n"
-    "1. Go to 'Image Upload' tab to upload photos\n"
-    "2. Use 'Live Camera' for real-time detection\n"
-    "3. Check 'Alerts Log' for detection history\n"
-    "4. Add known faces to 'known_faces' directory"
-)
+# Footer
+st.markdown("---")
+st.caption("🛡️ AI Security System | Face Recognition | Real-time Detection")
